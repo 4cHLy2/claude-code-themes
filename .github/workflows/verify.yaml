@@ -1,0 +1,78 @@
+name: verify
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-shell:
+    name: lint bash
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: syntax + shellcheck
+        run: |
+          files=$(git ls-files '*.sh')
+          [ -z "$files" ] && { echo "no .sh files"; exit 0; }
+          for f in $files; do echo "checking $f"; bash -n "$f"; done
+          shellcheck $files
+
+  lint-powershell:
+    name: lint powershell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $files = git ls-files '*.ps1'
+          if (-not $files) { Write-Host "no .ps1 files"; exit 0 }
+          $r = Invoke-ScriptAnalyzer -Path $files -Severity Warning,Error -ExcludeRule PSAvoidUsingWriteHost
+          if ($r) { $r | Format-Table -AutoSize; throw "$($r.Count) issue(s)" }
+          Write-Host "clean"
+
+  test-linux:
+    name: functional test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run install-themes.sh against a fixture
+        run: |
+          script=$(git ls-files '*install.sh' | head -1)
+          if [ -z "$script" ]; then echo "install-themes.sh not found in repo"; exit 1; fi
+          echo "using $script"
+          chmod +x "$script"
+          mkdir -p fixture/catppuccin
+          echo '{}' > fixture/catppuccin/catppuccin-mocha.json
+          echo '{}' > fixture/catppuccin/catppuccin-latte.json
+          echo '{}' > fixture/catppuccin/not-a-theme.json
+          "$PWD/$script" --source fixture/catppuccin --dest fixture/dest
+          test -f fixture/dest/catppuccin-mocha.json
+          test -f fixture/dest/catppuccin-latte.json
+          if [ -f fixture/dest/not-a-theme.json ]; then echo "decoy copied"; exit 1; fi
+          [ "$(ls fixture/dest | wc -l)" -eq 2 ]
+          echo "linux functional test passed"
+
+  test-windows:
+    name: functional test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run install.ps1 against a fixture
+        shell: pwsh
+        run: |
+          $script = (git ls-files '*install.ps1' | Select-Object -First 1)
+          if (-not $script) { throw "install.ps1 not found in repo" }
+          Write-Host "using $script"
+          New-Item -ItemType Directory fixture/catppuccin -Force | Out-Null
+          '{}' | Set-Content fixture/catppuccin/catppuccin-mocha.json
+          '{}' | Set-Content fixture/catppuccin/catppuccin-latte.json
+          '{}' | Set-Content fixture/catppuccin/not-a-theme.json
+          & "./$script" -Source fixture/catppuccin -Dest fixture/dest
+          if (-not (Test-Path fixture/dest/catppuccin-mocha.json)) { throw "mocha missing" }
+          if (-not (Test-Path fixture/dest/catppuccin-latte.json)) { throw "latte missing" }
+          if (Test-Path fixture/dest/not-a-theme.json) { throw "decoy copied" }
+          if ((Get-ChildItem fixture/dest).Count -ne 2) { throw "wrong file count" }
+          Write-Host "windows functional test passed"
